@@ -2,6 +2,12 @@ import cv2
 from ultralytics import YOLO
 from insightface.app import FaceAnalysis
 import numpy as np
+#--- 
+import json
+from datetime import datetime
+from pathlib import Path
+from time import monotonic
+
 
 model = YOLO("yolo26n.pt")
 camera = cv2.VideoCapture(0)
@@ -30,6 +36,21 @@ if known_embedding is None:
 
 MATCH_THRESHOLD = 0.65
 
+#---
+#maak map voor opgeslagen embeddings
+embedding_folder = Path("data/embeddings")
+embedding_folder.mkdir(parents=True, exist_ok=True)
+
+#bewaar embedding van testpersoon
+np.save(
+    embedding_folder / "testpersoon.npy",
+    known_embedding
+)
+
+#instellingen voor eventopslag
+EVENT_COOLDOWN_SECONDS = 15
+last_saved_time = None
+#---
 # check camera 
 
 if not camera.isOpened():
@@ -42,21 +63,25 @@ while True:
         print("Kon geen frame lezen.")
         break
 
-    faces= face_analyzer.get(frame)
+    faces = face_analyzer.get(frame)
 
     # einde camera check
-    
+
     # start detectie
 
     results = model(frame, verbose=False)
     result = results[0]
-    
+
+    person_count = 0
+
     for box in result.boxes:
         class_id = int(box.cls[0])
         class_name = model.names[class_id]
 
         if class_name != "person":
             continue
+
+        person_count += 1
 
         coordinates = box.xyxy[0].tolist()
 
@@ -87,6 +112,7 @@ while True:
             2
         )
 
+    detected_names = []
     #verwerk gevonden gezichten loop
     for face in faces:
         # pak gezicht coords
@@ -115,6 +141,8 @@ while True:
 
             label = f"{name}: {similarity:.2f}"
 
+        detected_names.append(name)
+
         cv2.rectangle(
             frame,
             (x1, y1),
@@ -132,6 +160,31 @@ while True:
             (255, 0, 0),
             2
         )
+
+    current_time = monotonic()
+
+    enough_time_passed = (
+        last_saved_time is None
+        or current_time - last_saved_time >= EVENT_COOLDOWN_SECONDS
+    )
+
+    detection_found = person_count > 0 or len(faces) > 0
+
+    if detection_found and enough_time_passed:
+        event = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "person_count": person_count,
+            "face_count": len(faces),
+            "recognized_faces": detected_names
+        }
+
+        event_file_path = Path("data/events.jsonl")
+
+        with event_file_path.open("a", encoding="utf-8") as event_file:
+            event_file.write(json.dumps(event) + "\n")
+
+        last_saved_time = current_time
+        print("detectie opgeslagen:")
 
     cv2.imshow("Smart Security Camera", frame)
 
